@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Supervision Network Map — CBUAE · SAS VA Data-Driven Content</title>
+<!--
+  SAS Visual Analytics — Data-Driven Content
+  "Supervision Network: Risk by Emirate" (light CBUAE theme)
+
+  DATA ROLES ("Variables" role). Columns are matched BY NAME first, then by position:
+    1. CATEGORY  Emirate
+    2. CATEGORY  Bank_Name
+    3. CATEGORY  Risk_Band                     (calculated item: High / Medium / Low)
+    4. MEASURE   Total_Assets                  (Sum)
+    5. MEASURE   P_Needs_Attention_Next_QYes   (Average)
+  Page controls (Quarter, Bank_Type, Ownership, Emirate) should filter this object.
+  Tip: keep the Quarter control on a single quarter, so each bank appears once.
+
+  INTERACTION: clicking a bank dot or an emirate sends a selection back to VA, so
+  you can use this object as the source of a filter/link action.
+
+  URL PARAMETERS:  ?debug=1  shows what VA sent   ?hq=0  hides the HQ marker and arcs
+  NOTE: emirate outlines are simplified shapes for presentation, not survey boundaries.
+-->
+<style>
+  :root{--gold:#B68A35;--gold-d:#7C5E24;--ink:#232528;--mut:#6E6A60;--red:#D83731;--amb:#CBA344;--grn:#3F8E50}
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0;background:transparent;overflow:hidden;font-family:"Segoe UI","Helvetica Neue",Arial,sans-serif;color:var(--ink)}
+  #wrap{position:absolute;inset:0;display:flex;flex-direction:column}
+  #svgbox{flex:1;min-height:0;position:relative}
+  svg#map{position:absolute;inset:0;width:100%;height:100%}
+  .leg{flex:0 0 auto;padding:2px 8px 4px;font-size:11px;color:var(--mut);display:flex;flex-direction:column;gap:3px}
+  .row{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+  .ramp{flex:1;height:7px;border-radius:4px;background:linear-gradient(90deg,#E4F4E7,#F2ECCF,#CBA344,#D83731);min-width:60px}
+  .dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:4px;vertical-align:-1px}
+  .em{cursor:pointer;transition:fill-opacity .2s}.em:hover{fill-opacity:1}
+  .bank{cursor:pointer}.bank:hover{stroke:#232528}
+  @keyframes pulse{0%{r:5;opacity:.85}100%{r:20;opacity:0}}.pulse{animation:pulse 2s ease-out infinite}
+  @keyframes dash{to{stroke-dashoffset:-40}}.flow{animation:dash 2.2s linear infinite}
+  @media (prefers-reduced-motion:reduce){.pulse,.flow{animation:none}}
+  #tip{position:absolute;pointer-events:none;background:rgba(255,255,255,.96);border:1px solid rgba(182,138,53,.4);border-radius:8px;padding:6px 9px;font-size:11.5px;box-shadow:0 6px 16px rgba(108,69,39,.15);display:none;white-space:nowrap;z-index:5}
+  #tip b{color:var(--gold-d)}
+  #msg{position:absolute;inset:0;display:grid;place-items:center;color:rgba(110,106,96,.7);font-size:13px}
+  #dbg{position:absolute;inset:0;overflow:auto;padding:10px;font:11.5px/1.5 Consolas,monospace;background:rgba(249,247,237,.98);z-index:9}
+  #dbg table{border-collapse:collapse}#dbg td,#dbg th{border:1px solid rgba(182,138,53,.3);padding:2px 6px}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="svgbox"><svg id="map" viewBox="0 15 640 500" preserveAspectRatio="xMidYMid meet"></svg><div id="msg">Waiting for data…</div></div>
+  <div class="leg">
+    <div class="row"><span id="lo">Low</span><span class="ramp"></span><span id="hi">High</span></div>
+    <div class="row"><span><span class="dot" style="background:#3F8E50"></span>Low</span><span><span class="dot" style="background:#CBA344"></span>Medium</span><span><span class="dot" style="background:#D83731"></span>High (pulsing)</span><span>Dot size = Total Assets · emirate shade = average Risk Score</span></div>
+  </div>
+</div>
+<div id="tip"></div>
+<script>
+(function(){
+"use strict";
+var Q={};location.search.replace(/^\?/,"").split("&").forEach(function(kv){if(!kv)return;var i=kv.indexOf("=");Q[decodeURIComponent(i<0?kv:kv.slice(0,i))]=i<0?"":decodeURIComponent(kv.slice(i+1))});
+
+/* ---------- geometry (lon/lat, simplified) ---------- */
+var UAE=[[51.58,24.26],[51.8,24.02],[52.05,24.0],[52.6,24.2],[53.0,24.15],[53.6,24.05],[54.0,24.12],[54.35,24.45],[54.6,24.75],[54.89,24.86],[55.15,25.12],[55.3,25.27],[55.4,25.36],[55.52,25.47],[55.68,25.6],[55.95,25.78],[56.05,25.95],[56.08,26.07],[56.18,25.75],[56.26,25.62],[56.33,25.35],[56.36,25.12],[56.37,24.98],[56.2,24.85],[56.02,24.72],[55.95,24.55],[55.8,24.25],[55.75,24.05],[55.95,23.75],[55.5,23.1],[55.2,22.7],[54.0,22.75],[52.58,22.94],[51.58,24.26]];
+var EM={"Abu Dhabi":[[51.58,24.26],[51.8,24.02],[52.05,24.0],[52.6,24.2],[53.0,24.15],[53.6,24.05],[54.0,24.12],[54.35,24.45],[54.6,24.75],[54.89,24.86],[55.2,24.66],[55.55,24.62],[55.82,24.5],[55.95,24.55],[55.8,24.25],[55.75,24.05],[55.95,23.75],[55.5,23.1],[55.2,22.7],[54.0,22.75],[52.58,22.94]],
+ "Dubai":[[54.89,24.86],[55.15,25.12],[55.3,25.27],[55.36,25.32],[55.5,25.18],[55.62,24.95],[55.55,24.62],[55.2,24.66]],
+ "Sharjah":[[55.36,25.32],[55.42,25.38],[55.55,25.33],[55.85,25.22],[56.02,24.98],[55.95,24.75],[55.62,24.95],[55.5,25.18]],
+ "Ajman":[[55.42,25.38],[55.5,25.45],[55.58,25.39],[55.55,25.33]],
+ "Umm Al Quwain":[[55.5,25.45],[55.68,25.6],[55.82,25.48],[55.62,25.36],[55.58,25.39]],
+ "Ras Al Khaimah":[[55.68,25.6],[55.95,25.78],[56.05,25.95],[56.08,26.07],[56.18,25.75],[56.12,25.5],[55.95,25.35],[55.85,25.22],[55.62,25.36],[55.82,25.48]],
+ "Fujairah":[[56.18,25.75],[56.26,25.62],[56.33,25.35],[56.36,25.12],[56.37,24.98],[56.2,24.85],[56.02,24.98],[55.95,25.35],[56.12,25.5]]};
+var CEN={"Abu Dhabi":[53.9,23.6],"Dubai":[55.3,25.0],"Sharjah":[55.75,25.12],"Ajman":[55.5,25.4],"Umm Al Quwain":[55.68,25.47],"Ras Al Khaimah":[56.0,25.7],"Fujairah":[56.24,25.25]};
+var LB={"Abu Dhabi":[150,440,"start"],"Dubai":[360,215,"end"],"Sharjah":[455,165,"end"],"Ajman":[420,120,"end"],"Ras Al Khaimah":[470,52,"end"],"Fujairah":[600,340,"end"],"Umm Al Quwain":[470,85,"end"]};
+var HQ=[54.37,24.47];
+function PX(p){return[30+(p[0]-51.5)*122,30+(26.15-p[1])*136]}
+function path(a){return"M"+a.map(function(p){var x=PX(p);return x[0].toFixed(1)+","+x[1].toFixed(1)}).join(" L")+"Z"}
+var BC={High:"#D83731",Medium:"#CBA344",Low:"#3F8E50"};
+function riskCol(v){var st=[[0,[228,244,231]],[.25,[242,236,207]],[.5,[203,163,68]],[1,[216,55,49]]];v=Math.max(0,Math.min(1,v));
+ for(var i=1;i<st.length;i++)if(v<=st[i][0]){var t=(v-st[i-1][0])/(st[i][0]-st[i-1][0]),a=st[i-1][1],b=st[i][1];return"rgb("+a.map(function(x,k){return Math.round(x+(b[k]-x)*t)}).join(",")+")"}return"rgb(216,55,49)"}
+function pct(v){return(v*100).toFixed(0)+"%"}
+function esc(s){return String(s==null?"":s).replace(/[&<>"]/g,function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]})}
+function norm(s){return String(s||"").toUpperCase().replace(/[^A-Z]/g,"")}
+var EMKEY={};Object.keys(EM).forEach(function(k){EMKEY[norm(k)]=k});
+
+/* ---------- column mapping ---------- */
+var WANT=[["emirate",/emirate/i],["bank",/bank.?name|^bank$/i],["band",/risk.?band|band/i],["assets",/total.?assets|assets/i],["score",/p_needs|risk.?score|eventprob|probab|score/i]];
+function mapCols(cols){var m={},used={};
+ WANT.forEach(function(w){for(var i=0;i<cols.length;i++){var n=(cols[i].label||"")+" "+(cols[i].name||"");if(!used[i]&&w[1].test(n)){m[w[0]]=i;used[i]=1;return}}});
+ WANT.forEach(function(w,j){if(m[w[0]]===undefined&&j<cols.length&&!used[j]){m[w[0]]=j;used[j]=1}});
+ return m}
+
+var RESULT=null,ROWS=[];
+var svg=document.getElementById("map"),tip=document.getElementById("tip"),msg=document.getElementById("msg");
+
+function select(rowIdx){ if(RESULT==null)return;
+ try{window.parent.postMessage({resultName:RESULT,selections:rowIdx.map(function(r){return{row:r}})},"*")}catch(e){} }
+
+function draw(){
+ msg.style.display=ROWS.length?"none":"grid"; if(!ROWS.length){svg.innerHTML="";return}
+ var by={};ROWS.forEach(function(r){(by[r.em]=by[r.em]||[]).push(r)});
+ var avgs={};Object.keys(by).forEach(function(e){var a=by[e];avgs[e]=a.reduce(function(s,r){return s+r.score},0)/a.length});
+ var av=Object.keys(avgs).map(function(k){return avgs[k]});
+ document.getElementById("lo").textContent="Low "+pct(Math.min.apply(null,av));document.getElementById("hi").textContent="High "+pct(Math.max.apply(null,av));
+ var g='<defs><filter id="ms"><feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#7C5E24" flood-opacity=".25"/></filter>'+
+  '<radialGradient id="hq"><stop offset="0" stop-color="#CBA344" stop-opacity=".6"/><stop offset="1" stop-color="#CBA344" stop-opacity="0"/></radialGradient>'+
+  '<pattern id="dots" width="8" height="8" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r=".8" fill="#B68A35" opacity=".25"/></pattern></defs>'+
+  '<rect x="0" y="0" width="640" height="560" fill="url(#dots)" opacity=".6"/>'+
+  '<text x="120" y="120" font-size="13" letter-spacing="6" fill="#5B8DB8" opacity=".55">ARABIAN GULF</text>'+
+  '<text x="612" y="250" font-size="10" letter-spacing="3" fill="#5B8DB8" opacity=".5" transform="rotate(75 612 250)">GULF OF OMAN</text>'+
+  '<path d="'+path(UAE)+'" fill="#F5EEDC" stroke="#B68A35" stroke-width="2" filter="url(#ms)"/>';
+ Object.keys(EM).forEach(function(e){var v=avgs[e];
+  g+='<path class="em" data-em="'+esc(e)+'" d="'+path(EM[e])+'" fill="'+(v==null?"#EFE7D2":riskCol(v))+'" fill-opacity="'+(v==null?.6:.85)+'" stroke="#fff" stroke-width="1.4"/>'});
+ var h=PX(HQ);
+ if(Q.hq!=="0")Object.keys(by).forEach(function(e){if(e==="Abu Dhabi"||!CEN[e])return;var c=PX(CEN[e]);
+  g+='<path d="M'+h[0]+","+h[1]+" Q"+(h[0]+c[0])/2+","+(Math.min(h[1],c[1])-70)+" "+c[0]+","+c[1]+'" fill="none" stroke="#B68A35" stroke-width="1.6" stroke-opacity=".75" stroke-dasharray="6 6" class="flow"/>'});
+ var mx=Math.max.apply(null,ROWS.map(function(r){return r.assets}).concat([1]));
+ Object.keys(by).forEach(function(e){if(!CEN[e])return;var c=PX(CEN[e]),sp=e==="Abu Dhabi"?13:e==="Dubai"?7.5:6;
+  by[e].slice().sort(function(p,q){return q.assets-p.assets}).forEach(function(r,i){
+   var an=i*2.39996,rd=sp*Math.sqrt(i+.3),x=c[0]+rd*Math.cos(an),y=c[1]+rd*Math.sin(an),col=BC[r.band]||"#9EA2A9",rr=2.6+6*Math.sqrt(Math.max(r.assets,0)/mx);
+   if(r.band==="High")g+='<circle cx="'+x+'" cy="'+y+'" r="5" fill="none" stroke="'+col+'" stroke-width="2" class="pulse" style="animation-delay:'+(i%5)*.35+'s"/>';
+   g+='<circle class="bank" data-i="'+r.i+'" cx="'+x+'" cy="'+y+'" r="'+rr+'" fill="'+col+'" fill-opacity=".9" stroke="#fff" stroke-width="1.3"/>'})});
+ if(Q.hq!=="0")g+='<circle cx="'+h[0]+'" cy="'+h[1]+'" r="28" fill="url(#hq)"/><g transform="translate('+h[0]+","+h[1]+') rotate(45)"><rect x="-7" y="-7" width="14" height="14" fill="#7C5E24" stroke="#fff" stroke-width="2"/></g>'+
+  '<text x="'+(h[0]-14)+'" y="'+(h[1]+30)+'" text-anchor="middle" font-size="11" font-weight="700" fill="#7C5E24">CBUAE HQ</text>';
+ Object.keys(LB).forEach(function(e){var a=by[e];if(!a)return;var l=LB[e],c=PX(CEN[e]),hi=a.filter(function(z){return z.band==="High"}).length;
+  g+='<line x1="'+c[0]+'" y1="'+c[1]+'" x2="'+l[0]+'" y2="'+(l[1]+4)+'" stroke="#7C5E24" stroke-opacity=".45"/>'+
+   '<g transform="translate('+l[0]+","+l[1]+')"><text text-anchor="'+l[2]+'" font-size="12.5" font-weight="700" fill="#232528" stroke="#fff" stroke-width="3" paint-order="stroke">'+esc(e)+'</text>'+
+   '<text text-anchor="'+l[2]+'" y="14" font-size="10.5" fill="#6E6A60" stroke="#fff" stroke-width="3" paint-order="stroke">'+a.length+" bank"+(a.length>1?"s":"")+" · "+pct(avgs[e])+" avg risk"+(hi?' · <tspan fill="#D83731" font-weight="700">'+hi+" high</tspan>":"")+"</text></g>"});
+ svg.innerHTML=g;
+
+ /* interactions */
+ Array.prototype.forEach.call(svg.querySelectorAll(".bank"),function(n){var r=ROWS[+n.getAttribute("data-i")];
+  n.addEventListener("mousemove",function(ev){showTip(ev,"<b>"+esc(r.bank)+"</b> · "+esc(r.em)+"<br>Risk Score "+pct(r.score)+" · "+esc(r.band)+"<br>Total Assets AED "+(r.assets/1000).toFixed(1)+" bn")});
+  n.addEventListener("mouseleave",hideTip);n.addEventListener("click",function(){select([r.i])})});
+ Array.prototype.forEach.call(svg.querySelectorAll(".em"),function(n){var e=n.getAttribute("data-em"),a=by[e];
+  n.addEventListener("mousemove",function(ev){showTip(ev,"<b>"+esc(e)+"</b>"+(a?"<br>"+a.length+" banks · avg Risk Score "+pct(avgs[e]):"<br>No banks in current filter"))});
+  n.addEventListener("mouseleave",hideTip);n.addEventListener("click",function(){if(a)select(a.map(function(r){return r.i}))})});
+}
+function showTip(ev,h){tip.innerHTML=h;tip.style.display="block";var x=ev.clientX+14,y=ev.clientY+12;
+ if(x+tip.offsetWidth>innerWidth-4)x=ev.clientX-tip.offsetWidth-10;if(y+tip.offsetHeight>innerHeight-4)y=ev.clientY-tip.offsetHeight-10;tip.style.left=x+"px";tip.style.top=y+"px"}
+function hideTip(){tip.style.display="none"}
+
+function debug(m){var d=document.createElement("div");d.id="dbg";var c=m.columns||[],r=m.data||[],mp=mapCols(c);
+ var h="<b>What VA sent</b> · rows: "+r.length+(m.availableRowCount>m.rowCount?" <span style='color:#D83731'>(TRUNCATED of "+m.availableRowCount+")</span>":"")+"<br>mapping: "+esc(JSON.stringify(mp))+"<table><tr><th>#</th><th>label</th><th>name</th><th>type</th><th>row 1</th></tr>";
+ c.forEach(function(x,i){h+="<tr><td>"+(i+1)+"</td><td>"+esc(x.label)+"</td><td>"+esc(x.name)+"</td><td>"+esc(x.type)+"</td><td>"+esc(r.length?r[0][i]:"")+"</td></tr>"});
+ d.innerHTML=h+"</table>";document.body.appendChild(d)}
+
+function onMessage(ev){var m=ev.data;if(!m||typeof m!=="object"||!m.columns||!m.data)return;
+ RESULT=m.resultName!==undefined?m.resultName:RESULT;
+ if(Q.debug==="1"){debug(m);return}
+ var mp=mapCols(m.columns);
+ ROWS=m.data.map(function(d,i){return{i:i,em:EMKEY[norm(d[mp.emirate])]||String(d[mp.emirate]),bank:d[mp.bank],band:String(d[mp.band]||""),assets:Number(d[mp.assets])||0,score:Number(d[mp.score])||0}});
+ draw()}
+window.addEventListener("message",onMessage,false);
+
+/* standalone preview only (never runs inside VA) */
+if(window.parent===window){var E=["Dubai","Abu Dhabi","Sharjah","Ras Al Khaimah","Ajman","Fujairah","Umm Al Quwain"],n=[19,13,7,3,2,2,1],data=[],k=0;
+ E.forEach(function(e,j){for(var i=0;i<n[j];i++){var s=[0,0,0,.09,.56,.94,1][(k*5+j)%7];k++;data.push([e,"Bank "+k,s>=.7?"High":s>=.4?"Medium":"Low",20000+((k*7919)%140000),s])}});
+ onMessage({data:{resultName:"preview",columns:[{name:"Emirate"},{name:"Bank_Name"},{name:"Risk_Band"},{name:"Total_Assets"},{name:"P_Needs_Attention_Next_QYes"}],data:data}})}
+})();
+</script>
+</body>
+</html>
