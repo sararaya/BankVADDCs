@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI Summary — CBUAE · SAS VA Data-Driven Content</title>
+<!--
+  SAS Visual Analytics — Data-Driven Content
+  "AI Summary" pill for the CBUAE landing page (light CBUAE theme).
+
+  DATA ROLES  ("Variables" role, in this order)
+  ---------------------------------------------
+    1. CATEGORY -> Bank_ID          -> {1:dc}          banks reporting
+    2. CATEGORY -> Quarter (YYQ)    -> {2:first:q}     quarter label
+    3. MEASURE  -> NPL_Rate (Avg)   -> {3:avg:p1}      sector NPL rate
+    4. MEASURE  -> High_Risk_Flag   -> {4:sum:alert}   banks in the High Risk_Band
+                   (calculated item: IF Risk_Band = 'High' RETURN 1 ELSE 0)
+  OBJECT FILTER: Quarter = latest quarter (2026 Q1)
+
+  PLACEHOLDER FORMATS
+  -------------------
+    {n}        plain number, thousands separated
+    {n:c}      auto-scaled (thousand / million / billion / trillion)
+    {n:p1}     percent: value x 100, 1 decimal, "%" appended (0.0616 -> 6.2%)
+    {n:q}      quarter label: SAS date/datetime, ISO date or "2026Q1" -> "2026 Q1"
+    {n:0}      force 0 decimals
+    aggregates: sum | avg | dc (distinct count) | cnt (row count) | min | max | first
+    add ":alert" to show the value in red
+    ratios: {n:agg/m:agg:fmt}
+
+  URL PARAMETERS (all optional)
+    ?t=      sentence template (URL-encoded)
+    ?badge=  badge label (default "AI SUMMARY"; empty to hide)
+    ?size=   start font size px (default 16)   ?min= smallest (default 10)
+    ?align=  center | start                    ?debug=1 show what VA sent
+-->
+<style>
+  :root{
+    --gold:#B68A35;            /* values, badge */
+    --gold-d:#7C5E24;
+    --ink:#4B4F58;             /* sentence text */
+    --red:#D83731;             /* alert values */
+    --bubble:rgba(255,255,255,.78);
+    --outline:rgba(182,138,53,.35);
+    --badge-bg:rgba(182,138,53,.08);
+    --size:16px;
+    --fonts:"Segoe UI","Helvetica Neue",Arial,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0}
+  body{background:transparent;overflow:hidden;color:var(--ink);font-family:var(--fonts);-webkit-font-smoothing:antialiased}
+  #wrap{height:100%;width:100%;min-height:0;min-width:0;padding:6px;display:flex;align-items:center;justify-content:center}
+  body.start #wrap{justify-content:flex-start}
+  .bubble{display:inline-flex;align-items:center;gap:12px;max-width:100%;min-width:0;
+    padding:8px 10px 8px 18px;background:var(--bubble);
+    -webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);
+    box-shadow:0 8px 24px rgba(108,69,39,.12),inset 0 1px 0 rgba(255,255,255,.9);
+    border-radius:50px;outline:1px var(--outline) solid;outline-offset:-1px;
+    animation:rise .45s cubic-bezier(.22,.9,.3,1) both}
+  @keyframes rise{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:none}}
+  @media (prefers-reduced-motion:reduce){.bubble{animation:none}}
+  .txt{min-width:0;font-size:var(--size);font-weight:500;line-height:1.5;color:var(--ink);text-align:left;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .txt b{color:var(--gold);font-weight:700;font-variant-numeric:tabular-nums}
+  .txt b.alert{color:var(--red)}
+  .txt .sep{color:rgba(182,138,53,.55);padding:0 2px}
+  .badge{display:inline-flex;align-items:center;gap:6px;flex:none;padding:4px 12px;background:var(--badge-bg);
+    border-radius:20px;outline:1px var(--outline) solid;outline-offset:-1px;color:var(--gold);
+    font-size:calc(var(--size) - 5px);font-weight:700;letter-spacing:1.5px;line-height:1.6;white-space:nowrap}
+  .badge svg{width:14px;height:14px;flex:none}
+  body.compact .bubble{padding:5px 8px 5px 12px;gap:8px;border-radius:30px}
+  body.compact .badge{padding:2px 9px}
+  body.wrapmode #wrap{align-items:stretch}
+  body.wrapmode .bubble{border-radius:18px;align-items:flex-start;padding:12px 16px;width:100%}
+  body.wrapmode .txt{white-space:normal;text-overflow:clip;overflow:visible;flex:1 1 auto}
+  .bubble.truncated{outline-color:rgba(216,55,49,.6)}
+  .bubble.truncated .txt:after{content:" \26A0";color:var(--red);font-weight:700}
+  #msg{color:rgba(110,106,96,.6);font-size:12.5px}
+  #dbg{position:absolute;inset:0;overflow:auto;padding:10px 12px;font:11.5px/1.5 ui-monospace,Consolas,monospace;color:#232528;background:rgba(249,247,237,.98)}
+  #dbg h4{margin:0 0 6px;font-size:12px;color:var(--gold-d)}
+  #dbg table{border-collapse:collapse;margin:4px 0 10px;width:100%}
+  #dbg td,#dbg th{border:1px solid rgba(182,138,53,.3);padding:2px 6px;text-align:left}
+  #dbg th{color:var(--gold-d)}
+  #dbg .bad{color:var(--red)} #dbg .ok{color:#3F8E50}
+</style>
+</head>
+<body>
+<div id="wrap"><span id="msg">Waiting for data…</span></div>
+<script>
+(function () {
+  "use strict";
+  var VERSION = "cbuae-v1 2026-11-22";
+
+  /* ---------- url params ---------- */
+  var Q = {};
+  location.search.replace(/^\?/, "").split("&").forEach(function (kv) {
+    if (!kv) return;
+    var i = kv.indexOf("=");
+    var k = decodeURIComponent(i < 0 ? kv : kv.slice(0, i));
+    Q[k] = i < 0 ? "" : decodeURIComponent(kv.slice(i + 1).replace(/\+/g, " "));
+  });
+  var DEFAULT_TEMPLATE =
+    "{1:dc} banks reported in {2:first:q} · sector NPL_Rate {3:avg:p1} · {4:sum:alert} banks in the High Risk_Band";
+  var TEMPLATE = (Q.t !== undefined && Q.t !== "") ? Q.t : DEFAULT_TEMPLATE;
+  var BADGE = (Q.badge !== undefined) ? Q.badge : "AI SUMMARY";
+  var DP = (Q.dp !== undefined) ? parseInt(Q.dp, 10) : 2; if (isNaN(DP)) DP = 2;
+  var BASE = Q.size ? parseInt(Q.size, 10) : 16, MINSZ = Q.min ? parseInt(Q.min, 10) : 10;
+  if (isNaN(BASE) || BASE < 6) BASE = 16; if (isNaN(MINSZ) || MINSZ < 6) MINSZ = 10;
+  if (Q.align === "start") document.body.classList.add("start");
+  var wrap = document.getElementById("wrap");
+  var UNITS = [[1e12, "trillion"], [1e9, "billion"], [1e6, "million"], [1e3, "thousand"]];
+
+  function num(n, dp) { return n.toLocaleString("en-US", { maximumFractionDigits: dp, minimumFractionDigits: 0 }); }
+  function fmt(v, dp) {
+    var n = Number(v); if (isNaN(n)) return String(v);
+    return num(n, Math.abs(n % 1) < 1e-9 ? 0 : (dp === undefined ? DP : dp));
+  }
+  function fmtCompact(v, dp) {
+    var n = Number(v); if (isNaN(n)) return String(v);
+    for (var i = 0; i < UNITS.length; i++) if (Math.abs(n) >= UNITS[i][0]) {
+      var x = n / UNITS[i][0]; return num(x, dp !== undefined ? dp : (Math.abs(x) >= 100 ? 1 : 2)) + " " + UNITS[i][1];
+    }
+    return fmt(n, dp);
+  }
+  function fmtPct(v, dp) {
+    var n = Number(v); if (isNaN(n)) return String(v);
+    var d = dp === undefined ? 1 : dp;
+    return (n * 100).toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d }) + "%";
+  }
+  /* quarter label from whatever VA sends: "2026Q1", "Q1 2026", ISO date, SAS date or SAS datetime */
+  function fmtQuarter(v) {
+    if (v === null || v === undefined) return "";
+    var s = String(v).trim(), m;
+    if ((m = s.match(/^(\d{4})\s*Q([1-4])$/i))) return m[1] + " Q" + m[2];
+    if ((m = s.match(/^Q([1-4])\s*(\d{4})$/i))) return m[2] + " Q" + m[1];
+    var d = null, n = Number(s);
+    if (!isNaN(n) && s !== "") {
+      var sasEpoch = Date.UTC(1960, 0, 1);
+      d = new Date(Math.abs(n) > 1e6 ? sasEpoch + n * 1000 : sasEpoch + n * 86400000); // datetime vs date
+    } else {
+      var p = Date.parse(s.replace(/^(\d{2})([A-Z]{3})(\d{4}).*$/i, "$1 $2 $3"));
+      if (!isNaN(p)) d = new Date(p);
+    }
+    if (!d || isNaN(d.getTime())) return s;
+    return d.getUTCFullYear() + " Q" + (Math.floor(d.getUTCMonth() / 3) + 1);
+  }
+  function esc(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; }); }
+
+  var SPARK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+    '<path d="M12 3.4 13.75 9l5.6 1.75L13.75 12.5 12 18.1l-1.75-5.6L4.65 10.75 10.25 9 12 3.4Z"/><path d="M18.7 3.5v2.5M19.95 4.75h-2.5"/></svg>';
+
+  var ROWS = [], TRUNCATED = false;
+  function cell(i) { return ROWS.length ? ROWS[0][i] : undefined; }
+  function aggregate(i, how) {
+    if (!ROWS.length) return undefined;
+    if (how === "cnt") return ROWS.length;
+    if (how === "first") return ROWS[0][i];
+    if (how === "dc") { var seen = Object.create(null), k = 0; ROWS.forEach(function (r) { var key = String(r[i]); if (!(key in seen)) { seen[key] = 1; k++; } }); return k; }
+    var acc = null, cnt = 0;
+    ROWS.forEach(function (r) { var x = Number(r[i]); if (r[i] === null || r[i] === "" || isNaN(x)) return; cnt++;
+      if (acc === null) acc = x; else if (how === "min") acc = Math.min(acc, x); else if (how === "max") acc = Math.max(acc, x); else acc += x; });
+    if (acc === null) return undefined;
+    return (how === "avg" && cnt) ? acc / cnt : acc;
+  }
+  var AGGS = { sum: 1, dc: 1, cnt: 1, avg: 1, min: 1, max: 1, first: 1 };
+  function parseRef(str) {
+    var t = String(str).split(":"), ref = { idx: parseInt(t[0], 10) - 1, agg: null, kind: "", dp: undefined, alert: false };
+    t.slice(1).forEach(function (tok) {
+      if (!tok) return;
+      if (tok === "alert") { ref.alert = true; return; }
+      if (AGGS[tok]) { ref.agg = tok; return; }
+      var m = tok.match(/^([a-z]?)(\d*)$/);
+      if (m) { if (m[1]) ref.kind = m[1]; if (m[2] !== "") ref.dp = parseInt(m[2], 10); }
+    });
+    return ref;
+  }
+  function valueOf(ref, single) { return (ref.agg && !single) ? aggregate(ref.idx, ref.agg) : cell(ref.idx); }
+
+  function render() {
+    var html = esc(TEMPLATE).replace(/\{([0-9][^}]*)\}/g, function (_, body) {
+      var sides = body.split("/"), L = parseRef(sides[0]), R = sides.length > 1 ? parseRef(sides[1]) : null;
+      if (isNaN(L.idx) || (R && isNaN(R.idx))) return "";
+      var single = ROWS.length === 1, v = valueOf(L, single);
+      if (v === undefined || v === null || v === "") return "";
+      if (R) { var d = Number(valueOf(R, single)); if (!d || isNaN(d)) return ""; v = Number(v) / d; }
+      var kind = (R && R.kind) || L.kind, dp = (R && R.dp !== undefined) ? R.dp : L.dp;
+      var out = kind === "c" ? fmtCompact(v, dp) : kind === "p" ? fmtPct(v, dp) : kind === "q" ? fmtQuarter(v) : fmt(v, dp);
+      return "<b" + ((L.alert || (R && R.alert)) ? ' class="alert"' : "") + ">" + esc(out) + "</b>";
+    }).replace(/\s·\s/g, ' <span class="sep">·</span> ');
+    wrap.innerHTML = '<div class="bubble' + (TRUNCATED ? " truncated" : "") + '"' +
+      (TRUNCATED ? ' title="VA delivered only part of the data, so these totals are partial."' : "") + ">" +
+      '<span class="txt">' + html + "</span>" +
+      (BADGE ? '<span class="badge">' + esc(BADGE) + SPARK + "</span>" : "") + "</div>";
+    fit();
+  }
+
+  /* ---------- auto-fit to the DDC frame ---------- */
+  function setSize(px) { document.documentElement.style.setProperty("--size", px + "px"); }
+  function fits(b, w, h) { var t = b.querySelector(".txt");
+    return b.scrollWidth <= w + 0.5 && b.scrollHeight <= h + 0.5 && (!t || t.scrollWidth <= t.clientWidth + 0.5); }
+  function fit() {
+    var b = wrap.querySelector(".bubble"); if (!b) return;
+    var W = wrap.clientWidth - 12, H = wrap.clientHeight - 12; if (W <= 0 || H <= 0) return;
+    document.body.classList.remove("wrapmode"); setSize(BASE); if (fits(b, W, H)) return;
+    var size = BASE, g = 0; while (!fits(b, W, H) && size > MINSZ && g++ < 60) { size -= 0.5; setSize(size); }
+    if (fits(b, W, H)) return;
+    document.body.classList.add("wrapmode"); size = BASE; g = 0; setSize(size);
+    while (!fits(b, W, H) && size > MINSZ && g++ < 60) { size -= 0.5; setSize(size); }
+  }
+  var pending = false;
+  function scheduleFit() { if (pending) return; pending = true; requestAnimationFrame(function () { pending = false; fit(); }); }
+
+  /* ---------- debug ---------- */
+  function debugDump(m) {
+    var d = document.getElementById("dbg"); if (!d) { d = document.createElement("div"); d.id = "dbg"; document.body.appendChild(d); }
+    var cols = m.columns || [], rows = m.data || [];
+    var h = "<h4>DDC debug — what SAS Visual Analytics sent</h4>file version: <b class='ok'>" + VERSION + "</b><br>";
+    if (m.rowCount !== undefined) { var tr = m.availableRowCount > m.rowCount;
+      h += "rowCount: <b>" + m.rowCount + "</b> of availableRowCount: <b class='" + (tr ? "bad" : "ok") + "'>" + m.availableRowCount + "</b>" + (tr ? " <span class='bad'>&larr; TRUNCATED</span>" : "") + "<br>"; }
+    h += "columns: <b>" + cols.length + "</b> &nbsp; rows: <b class='" + (rows.length ? "ok" : "bad") + "'>" + rows.length + "</b><br><br>";
+    h += "<table><tr><th>#</th><th>label</th><th>type</th><th>usage</th><th>row&nbsp;1 value</th><th>-&gt;</th></tr>";
+    cols.forEach(function (c, i) { h += "<tr><td>" + (i + 1) + "</td><td>" + esc(c.label || c.name) + "</td><td>" + esc(c.type || "") + "</td><td>" + esc(c.usage || "") +
+      "</td><td>" + esc(String(rows.length ? rows[0][i] : "")) + "</td><td>{" + (i + 1) + "}</td></tr>"; });
+    d.innerHTML = h + "</table>template: <code>" + esc(TEMPLATE) + "</code>";
+  }
+
+  function onMessage(ev) {
+    var m = ev.data; if (!m || typeof m !== "object" || !m.columns || !m.data) return;
+    ROWS = m.data || [];
+    TRUNCATED = !!(m.availableRowCount && m.rowCount && m.availableRowCount > m.rowCount);
+    if (Q.debug === "1") { debugDump(m); return; }
+    render();
+  }
+  window.addEventListener("message", onMessage, false);
+  function applyLayout() { document.body.classList.toggle("compact", document.documentElement.clientHeight < 56); scheduleFit(); }
+  if (window.ResizeObserver) new ResizeObserver(applyLayout).observe(document.documentElement);
+  window.addEventListener("resize", applyLayout, false);
+  applyLayout();
+
+  /* standalone preview (never runs inside VA) — one row per bank, as VA sends it */
+  if (window.parent === window) {
+    var demo = [];
+    for (var i = 0; i < 47; i++) demo.push(["LFI" + (i + 1), "2026Q1", 0.0616 + ((i % 7) - 3) * 0.004, i < 11 ? 1 : 0]);
+    onMessage({ data: { columns: [
+      { name: "Bank_ID", type: "string" }, { name: "Quarter", type: "string" },
+      { name: "NPL_Rate", type: "number" }, { name: "High_Risk_Flag", type: "number" } ], data: demo } });
+  }
+})();
+</script>
+</body>
+</html>
