@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Prediction Flow — CBUAE · SAS VA Data-Driven Content</title>
+<!--
+  SAS Visual Analytics — Data-Driven Content
+  "Prediction Flow: Risk Band, Prediction, Outcome" (light CBUAE theme)
+
+  DATA ROLES ("Variables" role). Columns are matched BY NAME first, then by position:
+    1. CATEGORY  Risk_Band                  (calculated item: High / Medium / Low)
+    2. CATEGORY  I_Needs_Attention_Next_Q   (predicted Yes / No)
+    3. CATEGORY  Needs_Attention_Next_Q     (actual Yes / No)
+    4. MEASURE   Frequency                  (or a distinct count of Bank_ID)
+  VA sends one row per combination (at most 3 x 2 x 2 = 12 rows).
+  The Quarter control may filter this object; "All quarters" shows bank-quarters.
+
+  INTERACTION: clicking a band, node or ribbon sends a selection back to VA,
+  so this object can drive a filter action (e.g. on the Watch List).
+
+  URL PARAMETERS:  ?debug=1  show what VA sent    ?unit=banks  label counts "banks" (default "rows")
+-->
+<style>
+  :root{--gold:#B68A35;--gold-d:#7C5E24;--ink:#232528;--mut:#6E6A60;--red:#D83731;--amb:#CBA344;--grn:#3F8E50}
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0;background:transparent;overflow:hidden;font-family:"Segoe UI","Helvetica Neue",Arial,sans-serif;color:var(--ink)}
+  #wrap{position:absolute;inset:0;display:flex;flex-direction:column}
+  #box{flex:1;min-height:0;position:relative}
+  svg#fl{position:absolute;inset:0;width:100%;height:100%}
+  .leg{flex:0 0 auto;padding:2px 8px 4px;font-size:11px;color:var(--mut);display:flex;gap:14px;flex-wrap:wrap;align-items:center}
+  .sw{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:4px;vertical-align:-1px}
+  .rib{cursor:pointer;transition:fill-opacity .15s}.rib:hover{fill-opacity:.7!important}
+  .node{cursor:pointer}
+  @keyframes dash{to{stroke-dashoffset:-48}}.flow{animation:dash 2.4s linear infinite}
+  @media (prefers-reduced-motion:reduce){.flow{animation:none}}
+  #tip{position:absolute;pointer-events:none;background:rgba(255,255,255,.96);border:1px solid rgba(182,138,53,.4);border-radius:8px;padding:6px 9px;font-size:11.5px;box-shadow:0 6px 16px rgba(108,69,39,.15);display:none;white-space:nowrap;z-index:5}
+  #tip b{color:var(--gold-d)}
+  #msg{position:absolute;inset:0;display:grid;place-items:center;color:rgba(110,106,96,.7);font-size:13px}
+  #dbg{position:absolute;inset:0;overflow:auto;padding:10px;font:11.5px/1.5 Consolas,monospace;background:rgba(249,247,237,.98);z-index:9}
+  #dbg table{border-collapse:collapse}#dbg td,#dbg th{border:1px solid rgba(182,138,53,.3);padding:2px 6px}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="box"><svg id="fl" viewBox="0 0 640 500" preserveAspectRatio="xMidYMid meet"></svg><div id="msg">Waiting for data…</div></div>
+  <div class="leg">
+    <span><span class="sw" style="background:#3F8E50"></span>Correct</span>
+    <span><span class="sw" style="background:#CBA344"></span>False alarm (predicted Yes, was No)</span>
+    <span><span class="sw" style="background:#D83731"></span>Missed (predicted No, was Yes)</span>
+  </div>
+</div>
+<div id="tip"></div>
+<script>
+(function(){
+"use strict";
+var Q={};location.search.replace(/^\?/,"").split("&").forEach(function(kv){if(!kv)return;var i=kv.indexOf("=");Q[decodeURIComponent(i<0?kv:kv.slice(0,i))]=i<0?"":decodeURIComponent(kv.slice(i+1))});
+var UNIT=Q.unit||"rows";
+var svg=document.getElementById("fl"),tip=document.getElementById("tip"),msg=document.getElementById("msg");
+var BAND=["High","Medium","Low"],YN=["Yes","No"];
+var BC={High:"#D83731",Medium:"#CBA344",Low:"#3F8E50"},PRED={Yes:"#7C5E24",No:"#9EA2A9"},ACT={Yes:"#D83731",No:"#3F8E50"};
+var RC={"Correct":"#3F8E50","False alarm":"#CBA344","Missed":"#D83731"};
+function esc(s){return String(s==null?"":s).replace(/[&<>"]/g,function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]})}
+function cap(s){s=String(s==null?"":s).trim();return s.charAt(0).toUpperCase()+s.slice(1).toLowerCase()}
+function pct(v){return (v*100).toFixed(1)+"%"}
+
+/* ---------- column mapping ---------- */
+function mapCols(cols){var m={},used={};
+ function lab(i){return ((cols[i].label||"")+" "+(cols[i].name||"")).toLowerCase()}
+ function take(key,test){if(m[key]!==undefined)return;for(var i=0;i<cols.length;i++)if(!used[i]&&test(lab(i),cols[i])){m[key]=i;used[i]=1;return}}
+ take("band",function(l){return /risk.?band|band/.test(l)});
+ take("pred",function(l){return /^i_|\bi_needs|predict|em_classification|into/.test(l)});
+ take("act",function(l){return /needs.?attention|actual|target|outcome/.test(l)});
+ take("n",function(l,c){return /frequency|count|banks|freq/.test(l)||c.type==="number"});
+ ["band","pred","act","n"].forEach(function(k,j){if(m[k]===undefined)for(var i=0;i<cols.length;i++)if(!used[i]){m[k]=i;used[i]=1;break}});
+ return m}
+
+var RESULT=null,ROWS=[];
+function select(idx){if(RESULT==null||!idx.length)return;try{window.parent.postMessage({resultName:RESULT,selections:idx.map(function(r){return{row:r}})},"*")}catch(e){}}
+
+function draw(){
+ msg.style.display=ROWS.length?"none":"grid";if(!ROWS.length){svg.innerHTML="";return}
+ var N=ROWS.reduce(function(s,r){return s+r.n},0)||1;
+ function tot(key,val){return ROWS.filter(function(r){return r[key]===val}).reduce(function(s,r){return s+r.n},0)}
+ var COLS=[{key:"band",vals:BAND,col:BC,title:"RISK BAND",sub:"Model score",lab:function(v){return v}},
+           {key:"pred",vals:YN,col:PRED,title:"PREDICTED",sub:"Cutoff 0.35",lab:function(v){return "Predicted "+v}},
+           {key:"act",vals:YN,col:ACT,title:"ACTUAL",sub:"What happened next quarter",lab:function(v){return "Actual "+v}}];
+ var xs=[112,312,508],w=18,top=62,H=390,gap=22;
+ var pos=COLS.map(function(c){var present=c.vals.filter(function(v){return tot(c.key,v)>0});var unit=(H-gap*Math.max(present.length-1,0))/N,y=top,o={};
+  c.vals.forEach(function(v){var n=tot(c.key,v);o[v]={y:y,h:n*unit,n:n,unit:unit};if(n)y+=n*unit+gap});return o});
+ var g='<defs><filter id="sh"><feDropShadow dx="0" dy="3" stdDeviation="4" flood-color="#7C5E24" flood-opacity=".25"/></filter></defs>';
+ COLS.forEach(function(c,i){g+='<text x="'+(xs[i]+w/2)+'" y="26" text-anchor="middle" font-size="11" letter-spacing="2" font-weight="700" fill="#7C5E24">'+c.title+'</text>'+
+  '<text x="'+(xs[i]+w/2)+'" y="42" text-anchor="middle" font-size="9.5" fill="#6E6A60">'+c.sub+'</text>'});
+ var ribbons=[],badges=[];
+ for(var s=0;s<2;s++){var A=COLS[s],B=COLS[s+1],oA={},oB={};A.vals.forEach(function(v){oA[v]=0});B.vals.forEach(function(v){oB[v]=0});
+  B.vals.forEach(function(b){A.vals.forEach(function(a){
+   var sub=ROWS.filter(function(r){return r[A.key]===a&&r[B.key]===b}),n=sub.reduce(function(t,r){return t+r.n},0);if(!n)return;
+   var h1=n*pos[s][a].unit,h2=n*pos[s+1][b].unit,ya=pos[s][a].y+oA[a],yb=pos[s+1][b].y+oB[b];oA[a]+=h1;oB[b]+=h2;
+   var x1=xs[s]+w,x2=xs[s+1],m=(x1+x2)/2,col,res=null;
+   if(s===0)col=BC[a];else{res=a===b?"Correct":(a==="Yes"?"False alarm":"Missed");col=RC[res]}
+   var bad=res&&res!=="Correct";
+   ribbons.push({d:"M"+x1+","+ya+" C"+m+","+ya+" "+m+","+yb+" "+x2+","+yb+" L"+x2+","+(yb+h2)+" C"+m+","+(yb+h2)+" "+m+","+(ya+h1)+" "+x1+","+(ya+h1)+"Z",
+    mid:"M"+x1+","+(ya+h1/2)+" C"+m+","+(ya+h1/2)+" "+m+","+(yb+h2/2)+" "+x2+","+(yb+h2/2),col:col,bad:bad,n:n,a:a,b:b,s:s,res:res,idx:sub.map(function(r){return r.i})});
+   if(bad)badges.push({x:m+20,y:a==="Yes"?Math.min(ya,yb)-14:Math.max(ya+h1,yb+h2)+16,col:col,t:res+" · "+n});
+  })})}
+ ribbons.forEach(function(r,k){g+='<path class="rib" data-k="'+k+'" d="'+r.d+'" fill="'+r.col+'" fill-opacity="'+(r.bad?.45:.28)+'"'+(r.bad?' stroke="'+r.col+'" stroke-dasharray="4 3"':"")+'/>'+
+  '<path d="'+r.mid+'" fill="none" stroke="#fff" stroke-width="1.4" stroke-dasharray="3 9" class="flow" opacity=".9" pointer-events="none"/>'});
+ badges.forEach(function(b){g+='<g transform="translate('+b.x+','+b.y+')" pointer-events="none"><rect x="-56" y="-11" width="112" height="20" rx="10" fill="#fff" stroke="'+b.col+'"/><text text-anchor="middle" y="3" font-size="10" font-weight="700" fill="'+b.col+'">'+esc(b.t)+'</text></g>'});
+ COLS.forEach(function(c,i){c.vals.forEach(function(v){var p=pos[i][v];if(!p.n)return;
+  g+='<rect class="node" data-c="'+i+'" data-v="'+v+'" x="'+xs[i]+'" y="'+p.y+'" width="'+w+'" height="'+Math.max(p.h,2)+'" rx="5" fill="'+c.col[v]+'" filter="url(#sh)"/>';
+  var lx=i<2?xs[i]-8:xs[i]+w+8,an=i<2?"end":"start",cy=p.y+p.h/2;
+  g+='<text x="'+lx+'" y="'+(cy+1)+'" text-anchor="'+an+'" font-size="13" font-weight="800" fill="'+c.col[v]+'" stroke="#fff" stroke-width="3" paint-order="stroke">'+esc(c.lab(v))+'</text>'+
+   '<text x="'+lx+'" y="'+(cy+15)+'" text-anchor="'+an+'" font-size="10.5" fill="#6E6A60" stroke="#fff" stroke-width="3" paint-order="stroke">'+p.n+" "+UNIT+" · "+pct(p.n/N)+'</text>'})});
+ svg.innerHTML=g;
+
+ Array.prototype.forEach.call(svg.querySelectorAll(".rib"),function(el){var r=ribbons[+el.getAttribute("data-k")];
+  var t=r.s===0?"<b>"+esc(r.a)+"</b> band → predicted <b>"+esc(r.b)+"</b>":"Predicted <b>"+esc(r.a)+"</b> → actual <b>"+esc(r.b)+"</b><br>"+esc(r.res);
+  el.addEventListener("mousemove",function(ev){showTip(ev,t+"<br>"+r.n+" "+UNIT+" ("+pct(r.n/N)+")")});el.addEventListener("mouseleave",hideTip);
+  el.addEventListener("click",function(){select(r.idx)})});
+ Array.prototype.forEach.call(svg.querySelectorAll(".node"),function(el){var c=COLS[+el.getAttribute("data-c")],v=el.getAttribute("data-v");
+  var idx=ROWS.filter(function(r){return r[c.key]===v}).map(function(r){return r.i});
+  el.addEventListener("mousemove",function(ev){showTip(ev,"<b>"+esc(c.lab(v))+"</b><br>"+tot(c.key,v)+" "+UNIT)});el.addEventListener("mouseleave",hideTip);
+  el.addEventListener("click",function(){select(idx)})});
+}
+function showTip(ev,h){tip.innerHTML=h;tip.style.display="block";var x=ev.clientX+14,y=ev.clientY+12;
+ if(x+tip.offsetWidth>innerWidth-4)x=ev.clientX-tip.offsetWidth-10;if(y+tip.offsetHeight>innerHeight-4)y=ev.clientY-tip.offsetHeight-10;tip.style.left=x+"px";tip.style.top=y+"px"}
+function hideTip(){tip.style.display="none"}
+
+function debug(m){var d=document.createElement("div");d.id="dbg";var c=m.columns||[],r=m.data||[];
+ var h="<b>What VA sent</b> · rows: "+r.length+"<br>mapping: "+esc(JSON.stringify(mapCols(c)))+"<table><tr><th>#</th><th>label</th><th>name</th><th>type</th><th>row 1</th></tr>";
+ c.forEach(function(x,i){h+="<tr><td>"+(i+1)+"</td><td>"+esc(x.label)+"</td><td>"+esc(x.name)+"</td><td>"+esc(x.type)+"</td><td>"+esc(r.length?r[0][i]:"")+"</td></tr>"});
+ d.innerHTML=h+"</table>";document.body.appendChild(d)}
+
+function onMessage(ev){var m=ev.data;if(!m||typeof m!=="object"||!m.columns||!m.data)return;
+ if(m.resultName!==undefined)RESULT=m.resultName;
+ if(Q.debug==="1"){debug(m);return}
+ var mp=mapCols(m.columns);
+ ROWS=m.data.map(function(d,i){return{i:i,band:cap(d[mp.band]),pred:cap(d[mp.pred]),act:cap(d[mp.act]),n:Number(d[mp.n])||0}})
+  .filter(function(r){return r.n>0&&BAND.indexOf(r.band)>=0&&YN.indexOf(r.pred)>=0&&YN.indexOf(r.act)>=0});
+ draw()}
+window.addEventListener("message",onMessage,false);
+
+/* standalone preview (never runs inside VA): real counts from the scored file, all quarters */
+if(window.parent===window){
+ onMessage({data:{resultName:"preview",columns:[{name:"Risk_Band"},{name:"I_Needs_Attention_Next_Q"},{name:"Needs_Attention_Next_Q"},{name:"Frequency",type:"number"}],
+  data:[["High", "Yes", "Yes", 245], ["High", "Yes", "No", 22], ["Medium", "Yes", "Yes", 17], ["Medium", "Yes", "No", 56], ["Low", "No", "No", 1582], ["Low", "No", "Yes", 6]]}})}
+})();
+</script>
+</body>
+</html>
